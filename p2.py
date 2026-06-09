@@ -1,0 +1,533 @@
+import sys
+import os
+import re
+from io import BytesIO
+from datetime import datetime
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+                             QPushButton, QSlider, QFileDialog, QLabel, QListWidget, QComboBox,
+                             QMessageBox)
+from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor, QFont
+from PIL import Image
+
+# 导入VLC
+try:
+    import vlc
+except:
+    print("错误：请安装 VLC 播放器，执行 pip install python-vlc")
+    sys.exit()
+
+# 导入音频元数据读取库
+try:
+    from mutagen import File as MutagenFile
+    from mutagen.mp3 import MP3
+    from mutagen.flac import FLAC
+    from mutagen.wave import WAVE
+except:
+    print("提示：未安装mutagen库，媒体信息不完整。执行 pip install mutagen")
+    MutagenFile = None
+
+class MediaPlayer(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("多媒体播放器")
+        self.resize(1024, 600)
+        # 新增：启动时最大化窗口
+        self.showMaximized()
+
+        # VLC 播放器初始化（修复COM音频报错）
+        self.vlc_instance = vlc.Instance("--quiet", "--aout=waveout")
+        self.media_player = self.vlc_instance.media_player_new()
+
+        # 全局播放状态
+        self.cur_media_path = ""
+        self.is_video = False
+        self.lrc_lines = []
+        self.lrc_time_list = []
+        self.cur_lrc_idx = -1
+        self.cur_speed = 1.0
+        self.loop_single = False
+
+        # 音频元数据缓存
+        self.audio_metadata = {
+            "sample_rate": "--", "channels": "--", "artist": "--",
+            "album": "--", "title": "--", "bitrate": "--"
+        }
+
+        # 【新增】用户自定义默认封面（全局）
+        self.custom_default_cover = None
+
+        # 键盘快捷键相关变量
+        self.space_pressed = False
+        self.is_space_long = False
+        self.original_speed = 1.0
+        self.space_timer = QTimer()
+        self.space_timer.setSingleShot(True)
+        self.space_timer.setInterval(200)
+        self.space_timer.timeout.connect(self.on_space_long_press)
+
+        self.init_ui()
+
+        # 全局刷新定时器（进度、歌词同步）
+        self.timer = QTimer(interval=50)
+        self.timer.timeout.connect(self.update_progress_and_lrc)
+        self.timer.start()
+
+    def on_space_long_press(self):
+        """空格长按判定"""
+        self.is_space_long = True
+
+    def init_ui(self):
+        central = QWidget()
+        self.setCentralWidget(central)
+        main_layout = QHBoxLayout(central)
+        main_layout.setContentsMargins(20, 20, 20, 20)
+        main_layout.setSpacing(15)
+
+        # ========== 左侧播放区域 ==========
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setSpacing(15)
+
+        # 播放画面/封面显示标签（已删除频谱堆叠组件）
+        self.video_label = QLabel()
+        self.video_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.video_label.setMinimumSize(320, 320)
+        self.video_label.setText("请打开媒体文件")
+        left_layout.addWidget(self.video_label)
+
+        # 歌词栏（默认隐藏）
+        self.lrc_list = QListWidget()
+        self.lrc_list.setFixedHeight(110)
+        self.lrc_list.setVisible(False)
+        left_layout.addWidget(self.lrc_list)
+
+        # 控制区域
+        control_layout = QVBoxLayout()
+        control_layout.setSpacing(8)
+
+        # 第一行：功能按钮 + 倍速选择
+        row1 = QHBoxLayout()
+        row1.setSpacing(8)
+        self.btn_open = QPushButton("打开音视频")
+        self.btn_lyric = QPushButton("上传LRC歌词")
+        self.btn_sub = QPushButton("加载SRT字幕")
+        self.btn_play = QPushButton("播放/暂停")
+        self.btn_stop = QPushButton("停止")
+        self.btn_loop = QPushButton("单曲循环")
+        self.btn_open_folder = QPushButton("打开文件夹")
+        # 【新增】设置默认封面按钮
+        self.btn_set_cover = QPushButton("设置默认封面")
+
+        self.cbx_speed = QComboBox()
+        self.cbx_speed.addItems(["0.5x", "0.7x", "1.0x", "1.2x", "1.5x", "2.0x"])
+        self.cbx_speed.setCurrentText("1.0x")
+
+        # 依次添加按钮
+        row1.addWidget(self.btn_open)
+        row1.addWidget(self.btn_lyric)
+        row1.addWidget(self.btn_sub)
+        row1.addWidget(self.btn_play)
+        row1.addWidget(self.btn_stop)
+        row1.addWidget(self.btn_loop)
+        row1.addWidget(self.btn_open_folder)
+        row1.addWidget(self.btn_set_cover)
+        row1.addWidget(QLabel("倍速"))
+        row1.addWidget(self.cbx_speed)
+        row1.addStretch()
+
+        # 第二行：进度条 + 音量条（已删除频谱单选框）
+        row2 = QHBoxLayout()
+        row2.setSpacing(10)
+        row2.addWidget(QLabel("进度"))
+        self.slider_pos = QSlider(Qt.Orientation.Horizontal)
+        row2.addWidget(self.slider_pos, stretch=5)
+        row2.addWidget(QLabel("音量"))
+        self.slider_vol = QSlider(Qt.Orientation.Horizontal)
+        self.slider_vol.setRange(0, 100)
+        self.slider_vol.setValue(80)
+        row2.addWidget(self.slider_vol, stretch=1)
+
+        # 绑定所有控件事件
+        self.btn_open.clicked.connect(self.open_media)
+        self.btn_lyric.clicked.connect(self.load_lrc_file)
+        self.btn_sub.clicked.connect(self.load_subtitle)
+        self.btn_play.clicked.connect(self.play_pause)
+        self.btn_stop.clicked.connect(self.stop_play)
+        self.btn_loop.clicked.connect(self.toggle_loop)
+        self.btn_open_folder.clicked.connect(self.open_file_folder)
+        self.btn_set_cover.clicked.connect(self.set_custom_default_cover)  # 绑定设置封面
+        self.cbx_speed.currentTextChanged.connect(self.set_play_speed)
+        self.slider_pos.sliderMoved.connect(self.seek_pos)
+        self.slider_vol.valueChanged.connect(self.set_volume)
+
+        control_layout.addLayout(row1)
+        control_layout.addLayout(row2)
+        left_layout.addLayout(control_layout)
+
+        # ========== 右侧媒体信息面板（可拖拽宽度） ==========
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setSpacing(10)
+        title = QLabel("媒体信息")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        right_layout.addWidget(title)
+        self.info_panel = QListWidget()
+        right_layout.addWidget(self.info_panel)
+
+        main_layout.addWidget(left_widget, stretch=3)
+        main_layout.addWidget(right_widget, stretch=1)
+
+    # ====================== 核心：设置用户自定义默认封面 ======================
+    def set_custom_default_cover(self):
+        """打开文件选择框，让用户上传图片作为全局默认封面"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择默认封面图片", "",
+            "图片文件 (*.jpg *.jpeg *.png *.bmp *.gif)"
+        )
+        if not file_path:
+            return
+
+        # 加载图片并缩放适配显示区域
+        try:
+            pix = QPixmap(file_path)
+            # 等比例缩放，适配播放区域大小
+            self.custom_default_cover = pix.scaled(
+                self.video_label.width(), self.video_label.height(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            QMessageBox.information(self, "设置成功", "默认封面已更换！\n无专辑封面的音频将自动展示该图片")
+            # 如果当前正在播放无封面音频，立即刷新显示
+            if self.cur_media_path and not self.is_video:
+                self.show_default_cover()
+        except Exception:
+            QMessageBox.warning(self, "加载失败", "图片格式错误或文件损坏！")
+
+    # ====================== 展示默认封面（优先用户上传图片） ======================
+    def show_default_cover(self):
+        """音频无内嵌封面时，展示默认封面"""
+        if self.custom_default_cover is not None:
+            # 存在用户上传的封面，直接使用
+            self.video_label.setPixmap(self.custom_default_cover)
+        else:
+            # 未上传封面，显示简易占位图
+            size = 550
+            pix = QPixmap(size, size)
+            pix.fill(QColor("#2c3e50"))
+            painter = QPainter(pix)
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setPen(QColor("#ffffff"))
+            painter.setFont(QFont("微软雅黑", 20, QFont.Weight.Bold))
+            painter.drawText(pix.rect(), Qt.AlignmentFlag.AlignCenter, "🎵 暂无封面\n请点击【设置默认封面】上传图片")
+            painter.end()
+            self.video_label.setPixmap(pix)
+
+    # ====================== 键盘事件（全快捷键） ======================
+    def keyPressEvent(self, event):
+        if event.isAutoRepeat():
+            return
+        key = event.key()
+        # 空格：短按暂停/播放，长按临时2倍速
+        if key == Qt.Key.Key_Space:
+            self.space_pressed = True
+            self.is_space_long = False
+            self.original_speed = self.cur_speed
+            self.cur_speed = 2.0
+            self.set_play_speed(str(self.cur_speed))
+            self.space_timer.start()
+        # 左方向键：回退10秒
+        elif key == Qt.Key.Key_Left:
+            current_ms = self.media_player.get_time()
+            self.media_player.set_time(max(current_ms - 10000, 0))
+        # 右方向键：快进10秒
+        elif key == Qt.Key.Key_Right:
+            current_ms = self.media_player.get_time()
+            total_ms = self.media_player.get_length()
+            self.media_player.set_time(min(current_ms + 10000, total_ms))
+        # 上方向键：音量+5
+        elif key == Qt.Key.Key_Up:
+            vol = self.media_player.audio_get_volume()
+            self.media_player.audio_set_volume(min(vol + 5, 100))
+            self.slider_vol.setValue(self.media_player.audio_get_volume())
+        # 下方向键：音量-5
+        elif key == Qt.Key.Key_Down:
+            vol = self.media_player.audio_get_volume()
+            self.media_player.audio_set_volume(max(vol - 5, 0))
+            self.slider_vol.setValue(self.media_player.audio_get_volume())
+        # Delete键：删除文件（二次确认）
+        elif key == Qt.Key.Key_Delete:
+            self.delete_current_media()
+        super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        key = event.key()
+        if key == Qt.Key.Key_Space and self.space_pressed:
+            self.space_pressed = False
+            self.space_timer.stop()
+            # 短按空格：切换暂停/播放
+            if not self.is_space_long:
+                self.play_pause()
+            # 恢复原始播放倍速
+            self.cur_speed = self.original_speed
+            self.set_play_speed(str(self.cur_speed))
+        super().keyReleaseEvent(event)
+
+    # ====================== 文件操作：打开文件夹 + 删除文件 ======================
+    def open_file_folder(self):
+        """一键打开当前文件所在文件夹"""
+        if not self.cur_media_path or not os.path.exists(self.cur_media_path):
+            return
+        os.startfile(os.path.dirname(self.cur_media_path))
+
+    def delete_current_media(self):
+        """删除当前文件（二次弹窗确认）"""
+        if not self.cur_media_path or not os.path.exists(self.cur_media_path):
+            return
+        reply = QMessageBox.question(
+            self, "删除确认",
+            f"确定永久删除该文件？\n{os.path.basename(self.cur_media_path)}\n操作无法撤销！",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            try:
+                self.media_player.stop()
+                os.remove(self.cur_media_path)
+                # 重置界面状态
+                self.cur_media_path = ""
+                self.video_label.clear()
+                self.video_label.setText("请打开媒体文件")
+                self.lrc_list.clear()
+                self.lrc_list.hide()
+                self.info_panel.clear()
+            except Exception:
+                QMessageBox.warning(self, "删除失败", "文件被占用、权限不足或已删除！")
+
+    # ====================== 读取音频元数据（采样率/声道/艺术家/专辑） ======================
+    def read_audio_metadata(self, file_path):
+        self.audio_metadata = {k: "--" for k in self.audio_metadata}
+        if not MutagenFile or self.is_video:
+            return
+        try:
+            audio = MutagenFile(file_path)
+            if audio:
+                # 音频技术参数
+                if hasattr(audio.info, 'sample_rate'):
+                    self.audio_metadata["sample_rate"] = f"{audio.info.sample_rate} Hz"
+                if hasattr(audio.info, 'channels'):
+                    self.audio_metadata["channels"] = f"{audio.info.channels} 声道"
+                if hasattr(audio.info, 'bitrate'):
+                    self.audio_metadata["bitrate"] = f"{audio.info.bitrate // 1000} kbps"
+                # 标签信息（艺术家、专辑、歌曲标题）
+                tags = audio.tags
+                if tags:
+                    self.audio_metadata["artist"] = tags.get('artist', tags.get('ARTIST', ['--']))[0]
+                    self.audio_metadata["album"] = tags.get('album', tags.get('ALBUM', ['--']))[0]
+                    self.audio_metadata["title"] = tags.get('title', tags.get('TITLE', ['--']))[0]
+        except Exception:
+            pass
+
+    # ====================== 加载音频内嵌封面 ======================
+    def load_audio_cover(self, file_path):
+        """加载音频自带专辑封面，无封面则展示默认封面"""
+        try:
+            if not MutagenFile:
+                self.show_default_cover()
+                return
+            audio = MutagenFile(file_path)
+            cover_data = None
+            # 读取MP3/FLAC内嵌封面
+            if isinstance(audio, MP3):
+                for tag in audio.tags.values():
+                    if tag.FrameID == "APIC":
+                        cover_data = tag.data
+                        break
+            elif isinstance(audio, FLAC):
+                for pic in audio.pictures:
+                    cover_data = pic.data
+
+            if cover_data:
+                # 存在内嵌封面，缩放后展示
+                img = Image.open(BytesIO(cover_data)).convert("RGBA")
+                img = img.resize((550, 550), Image.Resampling.LANCZOS)
+                qimg = QImage(img.tobytes(), img.width, img.height, QImage.Format.Format_RGBA8888)
+                self.video_label.setPixmap(QPixmap.fromImage(qimg))
+            else:
+                # 无内嵌封面，展示用户自定义默认封面
+                self.show_default_cover()
+        except Exception:
+            self.show_default_cover()
+
+    # ====================== 播放模式、倍速、字幕、歌词 ======================
+    def toggle_loop(self):
+        """切换单曲循环"""
+        self.loop_single = not self.loop_single
+        self.btn_loop.setText("循环(开启)" if self.loop_single else "单曲循环")
+
+    def bind_video_window(self):
+        """绑定VLC视频渲染窗口"""
+        self.media_player.set_hwnd(self.video_label.winId())
+
+    def set_play_speed(self, text):
+        """设置播放倍速"""
+        self.cur_speed = float(text.replace("x", ""))
+        self.media_player.set_rate(self.cur_speed)
+
+    def load_subtitle(self):
+        """加载SRT外挂字幕"""
+        path, _ = QFileDialog.getOpenFileName(self, "加载SRT字幕", "", "*.srt")
+        if path:
+            self.media_player.subtitle_set_file(path)
+
+    def parse_lrc(self, lrc_text):
+        """解析LRC歌词"""
+        reg = re.compile(r'\[(\d+):(\d+)\.(\d+)\]')
+        times, lyrics = [], []
+        for line in lrc_text.splitlines():
+            line = line.strip()
+            matches = reg.findall(line)
+            lyric = reg.sub("", line).strip()
+            if matches and lyric:
+                for m, s, ms in matches:
+                    times.append(int(m) * 60000 + int(s) * 1000 + int(ms))
+                    lyrics.append(lyric)
+        combined = sorted(zip(times, lyrics))
+        self.lrc_time_list, self.lrc_lines = zip(*combined) if combined else ([], [])
+
+    def load_lrc_file(self):
+        """手动加载LRC歌词文件"""
+        path, _ = QFileDialog.getOpenFileName(self, "选择LRC歌词", "", "*.lrc")
+        if path:
+            with open(path, "r", encoding="utf-8") as f:
+                self.parse_lrc(f.read())
+            self.lrc_list.clear()
+            self.lrc_list.addItems(self.lrc_lines)
+            self.lrc_list.setVisible(True)
+
+    # ====================== 媒体信息面板刷新 ======================
+    def show_media_info(self, path):
+        self.info_panel.clear()
+        stat = os.stat(path)
+        duration = self.media_player.get_length()
+        dur = f"{duration//60000}:{duration%60000//1000:02d}" if duration > 0 else "未知"
+        res = f"{self.media_player.video_get_width()}×{self.media_player.video_get_height()}" if self.is_video else "纯音频"
+
+        items = [
+            f"1. 文件名：{os.path.basename(path)[:15]}",
+            f"2. 标题：{self.audio_metadata['title'][:15]}",
+            f"3. 格式：{os.path.splitext(path)[1][1:].upper()}",
+            f"4. 大小：{stat.st_size/1024/1024:.2f} MB",
+            f"5. 修改时间：{datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M')}",
+            f"6. 时长：{dur}",
+            f"7. 分辨率：{res}",
+            f"8. 音频码率：{self.audio_metadata['bitrate']}",
+            f"9. 声道：{self.audio_metadata['channels']}",
+            f"10. 采样率：{self.audio_metadata['sample_rate']}",
+            f"11. 艺术家：{self.audio_metadata['artist'][:15]}",
+            f"12. 专辑：{self.audio_metadata['album'][:15]}",
+            f"13. 倍速：{self.cur_speed}x"
+        ]
+        self.info_panel.addItems(items)
+
+    # ====================== 打开媒体文件（自动加载同目录LRC） ======================
+    def open_media(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "打开媒体文件", "",
+            "媒体文件(*.mp3 *.flac *.wav *.mp4 *.mkv *.avi *.mov *.mpeg *.mpg *.flv *.webm *.m4a *.aac *.ogg *.opus *.wma *.alac *.aiff *.ape *.dsd *.sacd *.iso *.cue *.bin *.img *.dts *.dts-hd *.truehd *.mqa *.mqacd *.sacdsf *.sacdimg *.sacdcue)"
+        )
+        if not path:
+            return
+
+        self.cur_media_path = path
+        self.is_video = path.lower().endswith(('.mp4', '.mkv', '.avi', '.mov'))
+        self.lrc_list.clear()
+        self.lrc_list.hide()
+
+        # 读取音频元数据
+        self.read_audio_metadata(path)
+
+        if self.is_video:
+            # 视频文件：绑定渲染窗口，清空封面
+            self.bind_video_window()
+            self.video_label.clear()
+        else:
+            # 音频文件：加载内嵌封面 / 默认封面
+            self.load_audio_cover(path)
+
+        # 开始播放
+        media = self.vlc_instance.media_new(path)
+        self.media_player.set_media(media)
+        self.media_player.play()
+        self.media_player.set_rate(self.cur_speed)
+
+        # 刷新媒体信息面板
+        self.show_media_info(path)
+
+        # 自动加载【同目录同名LRC歌词】
+        if not self.is_video:
+            media_dir = os.path.dirname(path)
+            media_name = os.path.splitext(os.path.basename(path))[0]
+            lrc_path = os.path.join(media_dir, f"{media_name}.lrc")
+            if os.path.exists(lrc_path):
+                try:
+                    with open(lrc_path, "r", encoding="utf-8") as f:
+                        self.parse_lrc(f.read())
+                    self.lrc_list.addItems(self.lrc_lines)
+                    self.lrc_list.setVisible(True)
+                except Exception:
+                    pass
+
+    # ====================== 播放基础控制 ======================
+    def play_pause(self):
+        """播放 / 暂停"""
+        if self.media_player.is_playing():
+            self.media_player.pause()
+        else:
+            self.media_player.play()
+            self.media_player.set_rate(self.cur_speed)
+
+    def stop_play(self):
+        """停止播放"""
+        self.media_player.stop()
+        self.slider_pos.setValue(0)
+
+    def seek_pos(self, val):
+        """进度条拖拽跳转"""
+        self.media_player.set_time(val)
+
+    def set_volume(self, vol):
+        """音量调节"""
+        self.media_player.audio_set_volume(vol)
+
+    # ====================== 进度、歌词、单曲循环逻辑 ======================
+    def update_progress_and_lrc(self):
+        if not self.cur_media_path:
+            return
+        cur_ms = self.media_player.get_time()
+        total_ms = self.media_player.get_length()
+
+        # 同步进度条
+        if total_ms > 0:
+            self.slider_pos.setRange(0, total_ms)
+            self.slider_pos.setValue(cur_ms)
+
+        # 同步歌词高亮
+        if self.lrc_list.isVisible() and self.lrc_time_list:
+            target = -1
+            for i, t in enumerate(self.lrc_time_list):
+                if cur_ms >= t:
+                    target = i
+            if target != -1 and target != self.cur_lrc_idx:
+                self.cur_lrc_idx = target
+                self.lrc_list.setCurrentRow(target)
+
+        # 单曲循环：播放结束自动重播
+        if self.loop_single and total_ms > 0 and cur_ms >= total_ms - 100:
+            self.media_player.set_time(0)
+            self.media_player.play()
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    win = MediaPlayer()
+    win.show()
+    app.exec()
