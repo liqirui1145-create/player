@@ -28,6 +28,9 @@ except:
     MutagenFile = None
 
 class MediaPlayer(QMainWindow):
+    # 默认封面文件名
+    DEFAULT_COVER_FILENAME = "Xinjiang_Old_and_young_(Populus_diversifolia_胡杨)_(4973519309).jpg"
+    
     def __init__(self):
         super().__init__()
         self.setWindowTitle("多媒体播放器")
@@ -56,6 +59,8 @@ class MediaPlayer(QMainWindow):
 
         # 【新增】用户自定义默认封面（全局）
         self.custom_default_cover = None
+        # 自动加载项目目录中的默认封面图片
+        self.load_default_cover_from_file()
 
         # 键盘快捷键相关变量
         self.space_pressed = False
@@ -178,9 +183,20 @@ class MediaPlayer(QMainWindow):
         main_layout.addWidget(left_widget, stretch=3)
         main_layout.addWidget(right_widget, stretch=1)
 
+    # ====================== 自动加载项目目录中的默认封面 ======================
+    def load_default_cover_from_file(self):
+        """自动加载项目目录中的默认封面图片（保持原始分辨率）"""
+        cover_path = os.path.join(os.path.dirname(__file__), self.DEFAULT_COVER_FILENAME)
+        if os.path.exists(cover_path):
+            try:
+                # 保存原始分辨率的图片，不进行缩放
+                self.custom_default_cover = QPixmap(cover_path)
+            except Exception:
+                self.custom_default_cover = None
+
     # ====================== 核心：设置用户自定义默认封面 ======================
     def set_custom_default_cover(self):
-        """打开文件选择框，让用户上传图片作为全局默认封面"""
+        """打开文件选择框，让用户上传图片作为全局默认封面（保持原始分辨率）"""
         file_path, _ = QFileDialog.getOpenFileName(
             self, "选择默认封面图片", "",
             "图片文件 (*.jpg *.jpeg *.png *.bmp *.gif)"
@@ -188,15 +204,10 @@ class MediaPlayer(QMainWindow):
         if not file_path:
             return
 
-        # 加载图片并缩放适配显示区域
+        # 加载图片，保持原始分辨率
         try:
-            pix = QPixmap(file_path)
-            # 等比例缩放，适配播放区域大小
-            self.custom_default_cover = pix.scaled(
-                self.video_label.width(), self.video_label.height(),
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation
-            )
+            # 保存原始分辨率的图片
+            self.custom_default_cover = QPixmap(file_path)
             QMessageBox.information(self, "设置成功", "默认封面已更换！\n无专辑封面的音频将自动展示该图片")
             # 如果当前正在播放无封面音频，立即刷新显示
             if self.cur_media_path and not self.is_video:
@@ -206,10 +217,14 @@ class MediaPlayer(QMainWindow):
 
     # ====================== 展示默认封面（优先用户上传图片） ======================
     def show_default_cover(self):
-        """音频无内嵌封面时，展示默认封面"""
+        """音频无内嵌封面时，展示默认封面（原始分辨率自适应显示）"""
         if self.custom_default_cover is not None:
-            # 存在用户上传的封面，直接使用
-            self.video_label.setPixmap(self.custom_default_cover)
+            # 存在用户上传的封面，以原始分辨率自适应显示
+            self.video_label.setPixmap(self.custom_default_cover.scaled(
+                self.video_label.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            ))
         else:
             # 未上传封面，显示简易占位图
             size = 550
@@ -329,7 +344,7 @@ class MediaPlayer(QMainWindow):
 
     # ====================== 加载音频内嵌封面 ======================
     def load_audio_cover(self, file_path):
-        """加载音频自带专辑封面，无封面则展示默认封面"""
+        """加载音频自带专辑封面（原始分辨率），无封面则展示默认封面"""
         try:
             if not MutagenFile:
                 self.show_default_cover()
@@ -347,11 +362,16 @@ class MediaPlayer(QMainWindow):
                     cover_data = pic.data
 
             if cover_data:
-                # 存在内嵌封面，缩放后展示
+                # 存在内嵌封面，以原始分辨率自适应展示
                 img = Image.open(BytesIO(cover_data)).convert("RGBA")
-                img = img.resize((550, 550), Image.Resampling.LANCZOS)
                 qimg = QImage(img.tobytes(), img.width, img.height, QImage.Format.Format_RGBA8888)
-                self.video_label.setPixmap(QPixmap.fromImage(qimg))
+                pixmap = QPixmap.fromImage(qimg)
+                # 自适应显示区域，保持原始宽高比
+                self.video_label.setPixmap(pixmap.scaled(
+                    self.video_label.size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation
+                ))
             else:
                 # 无内嵌封面，展示用户自定义默认封面
                 self.show_default_cover()
@@ -527,7 +547,12 @@ class MediaPlayer(QMainWindow):
             self.media_player.play()
 
 if __name__ == "__main__":
+    print("Starting Media Player...")
     app = QApplication(sys.argv)
+    print("QApplication created")
     win = MediaPlayer()
+    print("MediaPlayer created")
     win.show()
+    print("Window shown, entering event loop...")
     app.exec()
+    print("Application exited")
