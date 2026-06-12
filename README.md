@@ -16,7 +16,7 @@ AI with liqirui1145-create开发，由本人输入提示词，doubao模型
 ## 安装依赖
 
 ```bash
-pip install pyqt6 python-vlc mutagen pillow
+pip install pyqt6 python-vlc mutagen pillow pywin32
 ```
 
 ## 运行
