@@ -245,6 +245,22 @@ class MediaPlayer(QMainWindow):
 
         gpl_layout = QHBoxLayout()
         gpl_layout.addStretch()
+        
+        # 添加 qrstudio-icon（缩放为136x68）
+        self.qrstudio_label = QLabel()
+        qrstudio_icon_path = os.path.join(os.path.dirname(__file__), "qrstudio-icon.png")
+        if os.path.exists(qrstudio_icon_path):
+            pixmap = QPixmap(qrstudio_icon_path).scaled(
+                136, 68,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation
+            )
+            self.qrstudio_label.setPixmap(pixmap)
+            self.qrstudio_label.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.qrstudio_label.mousePressEvent = self.open_qrstudio_link
+        gpl_layout.addWidget(self.qrstudio_label)
+        
+        # GPL logo
         self.gpl_label = QLabel()
         gpl_logo_path = os.path.join(os.path.dirname(__file__), "gplv3-with-text-136x68.png")
         if os.path.exists(gpl_logo_path):
@@ -259,6 +275,9 @@ class MediaPlayer(QMainWindow):
 
     def open_gpl_link(self, event):
         QDesktopServices.openUrl(QUrl("https://www.gnu.org/licenses/gpl-3.0"))
+
+    def open_qrstudio_link(self, event):
+        QDesktopServices.openUrl(QUrl("https://qrstudio.net"))
 
     # ====================== 自动加载项目目录中的默认封面 ======================
     def load_default_cover_from_file(self):
