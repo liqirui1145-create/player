@@ -28,6 +28,16 @@ except:
     print("提示：未安装mutagen库，媒体信息不完整。执行 pip install mutagen")
     MutagenFile = None
 
+# Windows电源事件监听（用于检测休眠/睡眠/合上盖子）
+try:
+    import win32api
+    import win32con
+    import win32gui
+    HAS_WIN32 = True
+except ImportError:
+    print("提示：未安装pywin32，休眠检测功能不可用。执行 pip install pywin32")
+    HAS_WIN32 = False
+
 class MediaPlayer(QMainWindow):
     # 默认封面文件名
     DEFAULT_COVER_FILENAME = "Xinjiang_Old_and_young_(Populus_diversifolia_胡杨)_(4973519309).jpg"
@@ -74,10 +84,62 @@ class MediaPlayer(QMainWindow):
 
         self.init_ui()
 
+        # 【新增】为所有子控件安装事件过滤器，实现全局快捷键
+        self.install_global_shortcuts()
+
+        # 【新增】休眠/睡眠检测功能
+        self.was_playing_before_sleep = False
+        self.setup_power_event_listener()
+
         # 全局刷新定时器（进度、歌词同步）
         self.timer = QTimer(interval=50)
         self.timer.timeout.connect(self.update_progress_and_lrc)
         self.timer.start()
+    
+    def setup_power_event_listener(self):
+        """设置Windows电源事件监听（检测休眠/睡眠/合上盖子）"""
+        if HAS_WIN32:
+            # 注册电源事件回调
+            self.power_event_window = PowerEventWindow(self)
+    
+    def on_system_suspend(self):
+        """系统即将进入休眠/睡眠状态"""
+        if self.media_player.is_playing():
+            self.was_playing_before_sleep = True
+            self.media_player.pause()
+            print("系统即将休眠，已暂停播放")
+    
+    def on_system_resume(self):
+        """系统从休眠/睡眠状态恢复"""
+        if self.was_playing_before_sleep:
+            self.media_player.play()
+            self.was_playing_before_sleep = False
+            print("系统已恢复，继续播放")
+    
+    def install_global_shortcuts(self):
+        """为所有子控件安装事件过滤器，实现窗口内全局快捷键"""
+        self.video_label.installEventFilter(self)
+        self.lrc_list.installEventFilter(self)
+        self.info_panel.installEventFilter(self)
+        self.cbx_speed.installEventFilter(self)
+        self.slider_pos.installEventFilter(self)
+        self.slider_vol.installEventFilter(self)
+        self.btn_open.installEventFilter(self)
+        self.btn_lyric.installEventFilter(self)
+        self.btn_sub.installEventFilter(self)
+        self.btn_play.installEventFilter(self)
+        self.btn_stop.installEventFilter(self)
+        self.btn_loop.installEventFilter(self)
+        self.btn_open_folder.installEventFilter(self)
+        self.btn_set_cover.installEventFilter(self)
+    
+    def eventFilter(self, obj, event):
+        """事件过滤器：拦截所有子控件的键盘事件，实现全局快捷键"""
+        if event.type() == event.Type.KeyPress:
+            return self.handle_global_key_press(event)
+        elif event.type() == event.Type.KeyRelease:
+            return self.handle_global_key_release(event)
+        return super().eventFilter(obj, event)
 
     def on_space_long_press(self):
         """空格长按判定"""
@@ -253,11 +315,14 @@ class MediaPlayer(QMainWindow):
             painter.end()
             self.video_label.setPixmap(pix)
 
-    # ====================== 键盘事件（全快捷键） ======================
-    def keyPressEvent(self, event):
+    # ====================== 全局键盘事件处理（快捷键） ======================
+    def handle_global_key_press(self, event):
+        """全局快捷键处理 - 按键按下"""
         if event.isAutoRepeat():
-            return
+            return False
         key = event.key()
+        handled = True
+        
         # 空格：短按暂停/播放，长按临时2倍速
         if key == Qt.Key.Key_Space:
             self.space_pressed = True
@@ -288,10 +353,16 @@ class MediaPlayer(QMainWindow):
         # Delete键：删除文件（二次确认）
         elif key == Qt.Key.Key_Delete:
             self.delete_current_media()
-        super().keyPressEvent(event)
-
-    def keyReleaseEvent(self, event):
+        else:
+            handled = False
+        
+        return handled  # 返回True表示事件已处理，不再传递
+    
+    def handle_global_key_release(self, event):
+        """全局快捷键处理 - 按键释放"""
         key = event.key()
+        handled = False
+        
         if key == Qt.Key.Key_Space and self.space_pressed:
             self.space_pressed = False
             self.space_timer.stop()
@@ -301,7 +372,19 @@ class MediaPlayer(QMainWindow):
             # 恢复原始播放倍速
             self.cur_speed = self.original_speed
             self.set_play_speed(str(self.cur_speed))
-        super().keyReleaseEvent(event)
+            handled = True
+        
+        return handled  # 返回True表示事件已处理，不再传递
+    
+    def keyPressEvent(self, event):
+        """主窗口按键事件 - 委托给全局处理"""
+        if not self.handle_global_key_press(event):
+            super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        """主窗口按键释放事件 - 委托给全局处理"""
+        if not self.handle_global_key_release(event):
+            super().keyReleaseEvent(event)
 
     # ====================== 文件操作：打开文件夹 + 删除文件 ======================
     def open_file_folder(self):
@@ -560,6 +643,56 @@ class MediaPlayer(QMainWindow):
         if self.loop_single and total_ms > 0 and cur_ms >= total_ms - 100:
             self.media_player.set_time(0)
             self.media_player.play()
+
+if HAS_WIN32:
+    class PowerEventWindow:
+        """监听Windows电源事件的隐藏窗口"""
+        
+        def __init__(self, media_player):
+            self.media_player = media_player
+            self.hwnd = None
+            self.register_window()
+        
+        def register_window(self):
+            """注册隐藏窗口以接收电源事件"""
+            # 窗口类名
+            wc = win32gui.WNDCLASS()
+            wc.lpfnWndProc = self.wnd_proc
+            wc.lpszClassName = "MediaPlayerPowerEventWindow"
+            wc.hInstance = win32api.GetModuleHandle(None)
+            
+            # 注册窗口类
+            try:
+                win32gui.RegisterClass(wc)
+            except:
+                pass  # 类已注册
+            
+            # 创建隐藏窗口
+            self.hwnd = win32gui.CreateWindowEx(
+                0,
+                "MediaPlayerPowerEventWindow",
+                "",
+                0,
+                0, 0, 0, 0,
+                0, 0,
+                win32api.GetModuleHandle(None),
+                None
+            )
+            
+            # 无需额外注册，WM_POWERBROADCAST 消息会自动发送到所有顶级窗口
+        
+        def wnd_proc(self, hwnd, msg, wparam, lparam):
+            """窗口消息处理函数"""
+            if msg == win32con.WM_POWERBROADCAST:
+                if wparam == win32con.PBT_APMSUSPEND:
+                    # 系统即将进入休眠/睡眠
+                    self.media_player.on_system_suspend()
+                elif wparam == win32con.PBT_APMRESUMESUSPEND:
+                    # 系统从休眠/睡眠恢复
+                    self.media_player.on_system_resume()
+            
+            return win32gui.DefWindowProc(hwnd, msg, wparam, lparam)
+
 
 if __name__ == "__main__":
     print("Starting Media Player...")
