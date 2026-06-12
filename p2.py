@@ -366,7 +366,16 @@ class MediaPlayer(QMainWindow):
     
     def handle_global_key_release(self, event):
         """全局快捷键处理 - 按键释放"""
+        else:
+            handled = False
+        
+        return handled  # 返回True表示事件已处理，不再传递
+    
+    def handle_global_key_release(self, event):
+        """全局快捷键处理 - 按键释放"""
         key = event.key()
+        handled = False
+        
         handled = False
         
         if key == Qt.Key.Key_Space and self.space_pressed:
