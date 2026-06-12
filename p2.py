@@ -74,10 +74,38 @@ class MediaPlayer(QMainWindow):
 
         self.init_ui()
 
+        # 【新增】为所有子控件安装事件过滤器，实现全局快捷键
+        self.install_global_shortcuts()
+
         # 全局刷新定时器（进度、歌词同步）
         self.timer = QTimer(interval=50)
         self.timer.timeout.connect(self.update_progress_and_lrc)
         self.timer.start()
+    
+    def install_global_shortcuts(self):
+        """为所有子控件安装事件过滤器，实现窗口内全局快捷键"""
+        self.video_label.installEventFilter(self)
+        self.lrc_list.installEventFilter(self)
+        self.info_panel.installEventFilter(self)
+        self.cbx_speed.installEventFilter(self)
+        self.slider_pos.installEventFilter(self)
+        self.slider_vol.installEventFilter(self)
+        self.btn_open.installEventFilter(self)
+        self.btn_lyric.installEventFilter(self)
+        self.btn_sub.installEventFilter(self)
+        self.btn_play.installEventFilter(self)
+        self.btn_stop.installEventFilter(self)
+        self.btn_loop.installEventFilter(self)
+        self.btn_open_folder.installEventFilter(self)
+        self.btn_set_cover.installEventFilter(self)
+    
+    def eventFilter(self, obj, event):
+        """事件过滤器：拦截所有子控件的键盘事件，实现全局快捷键"""
+        if event.type() == event.Type.KeyPress:
+            return self.handle_global_key_press(event)
+        elif event.type() == event.Type.KeyRelease:
+            return self.handle_global_key_release(event)
+        return super().eventFilter(obj, event)
 
     def on_space_long_press(self):
         """空格长按判定"""
@@ -253,11 +281,14 @@ class MediaPlayer(QMainWindow):
             painter.end()
             self.video_label.setPixmap(pix)
 
-    # ====================== 键盘事件（全快捷键） ======================
-    def keyPressEvent(self, event):
+    # ====================== 全局键盘事件处理（快捷键） ======================
+    def handle_global_key_press(self, event):
+        """全局快捷键处理 - 按键按下"""
         if event.isAutoRepeat():
-            return
+            return False
         key = event.key()
+        handled = True
+        
         # 空格：短按暂停/播放，长按临时2倍速
         if key == Qt.Key.Key_Space:
             self.space_pressed = True
@@ -288,10 +319,16 @@ class MediaPlayer(QMainWindow):
         # Delete键：删除文件（二次确认）
         elif key == Qt.Key.Key_Delete:
             self.delete_current_media()
-        super().keyPressEvent(event)
-
-    def keyReleaseEvent(self, event):
+        else:
+            handled = False
+        
+        return handled  # 返回True表示事件已处理，不再传递
+    
+    def handle_global_key_release(self, event):
+        """全局快捷键处理 - 按键释放"""
         key = event.key()
+        handled = False
+        
         if key == Qt.Key.Key_Space and self.space_pressed:
             self.space_pressed = False
             self.space_timer.stop()
@@ -301,7 +338,19 @@ class MediaPlayer(QMainWindow):
             # 恢复原始播放倍速
             self.cur_speed = self.original_speed
             self.set_play_speed(str(self.cur_speed))
-        super().keyReleaseEvent(event)
+            handled = True
+        
+        return handled  # 返回True表示事件已处理，不再传递
+    
+    def keyPressEvent(self, event):
+        """主窗口按键事件 - 委托给全局处理"""
+        if not self.handle_global_key_press(event):
+            super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        """主窗口按键释放事件 - 委托给全局处理"""
+        if not self.handle_global_key_release(event):
+            super().keyReleaseEvent(event)
 
     # ====================== 文件操作：打开文件夹 + 删除文件 ======================
     def open_file_folder(self):
