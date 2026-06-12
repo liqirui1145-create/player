@@ -46,8 +46,8 @@ class MediaPlayer(QMainWindow):
         super().__init__()
         self.setWindowTitle("多媒体播放器")
         self.resize(1024, 600)
-        # 新增：启动时最大化窗口
-        self.showMaximized()
+        # 设置窗口状态为最大化
+        self.setWindowState(Qt.WindowState.WindowMaximized)
 
         # VLC 播放器初始化（修复COM音频报错）
         self.vlc_instance = vlc.Instance("--quiet", "--aout=waveout")
@@ -237,6 +237,25 @@ class MediaPlayer(QMainWindow):
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
         right_layout.setSpacing(10)
+
+        # 网络串流功能
+        stream_layout = QHBoxLayout()
+        stream_layout.setSpacing(5)
+        self.stream_url_edit = QLabel()
+        self.stream_url_edit.setText("网络串流 URL:")
+        self.stream_url_input = QComboBox()
+        self.stream_url_input.setEditable(True)
+        self.stream_url_input.addItems(["https://example.com/stream", "rtsp://example.com/camera"])
+        self.stream_url_input.setPlaceholderText("请输入网络串流地址")
+        self.btn_stream = QPushButton("播放串流")
+        stream_layout.addWidget(self.stream_url_edit)
+        stream_layout.addWidget(self.stream_url_input)
+        stream_layout.addWidget(self.btn_stream)
+        right_layout.addLayout(stream_layout)
+
+        # 绑定网络串流事件
+        self.btn_stream.clicked.connect(self.play_stream)
+
         title = QLabel("媒体信息")
         title.setAlignment(Qt.AlignmentFlag.AlignCenter)
         right_layout.addWidget(title)
@@ -563,27 +582,148 @@ class MediaPlayer(QMainWindow):
     # ====================== 媒体信息面板刷新 ======================
     def show_media_info(self, path):
         self.info_panel.clear()
-        stat = os.stat(path)
         duration = self.media_player.get_length()
         dur = f"{duration//60000}:{duration%60000//1000:02d}" if duration > 0 else "未知"
         res = f"{self.media_player.video_get_width()}×{self.media_player.video_get_height()}" if self.is_video else "纯音频"
 
-        items = [
-            f"1. 文件名：{os.path.basename(path)[:15]}",
-            f"2. 标题：{self.audio_metadata['title'][:15]}",
-            f"3. 格式：{os.path.splitext(path)[1][1:].upper()}",
-            f"4. 大小：{stat.st_size/1024/1024:.2f} MB",
-            f"5. 修改时间：{datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M')}",
-            f"6. 时长：{dur}",
-            f"7. 分辨率：{res}",
-            f"8. 音频码率：{self.audio_metadata['bitrate']}",
-            f"9. 声道：{self.audio_metadata['channels']}",
-            f"10. 采样率：{self.audio_metadata['sample_rate']}",
-            f"11. 艺术家：{self.audio_metadata['artist'][:15]}",
-            f"12. 专辑：{self.audio_metadata['album'][:15]}",
-            f"13. 倍速：{self.cur_speed}x"
-        ]
+        # 判断是否为网络串流
+        is_stream = path.startswith(('http://', 'https://', 'rtsp://', 'rtmp://', 'udp://', 'tcp://'))
+
+        if is_stream:
+            # 网络串流：提取URL信息
+            url = path
+            # 提取协议
+            protocol = url.split('://')[0].upper() + '://'
+            # 提取域名/IP
+            host = url.split('://')[1].split('/')[0] if '://' in url else url
+            # 提取路径
+            url_path = '/' + '/'.join(url.split('://')[1].split('/')[1:]) if '://' in url and len(url.split('://')[1].split('/')) > 1 else ''
+            
+            items = [
+                f"1. 类型：网络串流",
+                f"2. 协议：{protocol}",
+                f"3. 地址：{host}",
+                f"4. 路径：{url_path[:20]}",
+                f"5. 时长：{dur}",
+                f"6. 分辨率：{res}",
+                f"7. 音频码率：{self.audio_metadata['bitrate']}",
+                f"8. 声道：{self.audio_metadata['channels']}",
+                f"9. 采样率：{self.audio_metadata['sample_rate']}",
+                f"10. 倍速：{self.cur_speed}x"
+            ]
+        else:
+            # 本地文件：使用原始逻辑
+            try:
+                stat = os.stat(path)
+                items = [
+                    f"1. 文件名：{os.path.basename(path)[:15]}",
+                    f"2. 标题：{self.audio_metadata['title'][:15]}",
+                    f"3. 格式：{os.path.splitext(path)[1][1:].upper()}",
+                    f"4. 大小：{stat.st_size/1024/1024:.2f} MB",
+                    f"5. 修改时间：{datetime.fromtimestamp(stat.st_mtime).strftime('%Y-%m-%d %H:%M')}",
+                    f"6. 时长：{dur}",
+                    f"7. 分辨率：{res}",
+                    f"8. 音频码率：{self.audio_metadata['bitrate']}",
+                    f"9. 声道：{self.audio_metadata['channels']}",
+                    f"10. 采样率：{self.audio_metadata['sample_rate']}",
+                    f"11. 艺术家：{self.audio_metadata['artist'][:15]}",
+                    f"12. 专辑：{self.audio_metadata['album'][:15]}",
+                    f"13. 倍速：{self.cur_speed}x"
+                ]
+            except Exception as e:
+                items = [
+                    f"1. 文件：{os.path.basename(path)[:15]}",
+                    f"2. 错误：无法读取文件信息",
+                    f"3. 时长：{dur}",
+                    f"4. 分辨率：{res}",
+                    f"5. 倍速：{self.cur_speed}x"
+                ]
+
         self.info_panel.addItems(items)
+
+    # ====================== 播放网络串流 ======================
+    def play_stream(self):
+        """播放网络串流"""
+        try:
+            url = self.stream_url_input.currentText().strip()
+            if not url:
+                QMessageBox.warning(self, "输入错误", "请输入有效的网络串流地址！")
+                return
+
+            # 验证URL格式
+            if not (url.startswith('http://') or url.startswith('https://') or 
+                    url.startswith('rtsp://') or url.startswith('rtmp://') or
+                    url.startswith('udp://') or url.startswith('tcp://')):
+                QMessageBox.warning(self, "格式错误", "请输入有效的网络协议地址（如 http://, https://, rtsp://）")
+                return
+
+            # 停止当前播放
+            if self.media_player.is_playing():
+                self.media_player.stop()
+
+            self.cur_media_path = url
+            
+            # 判断是否为视频流：检查扩展名或常见视频协议
+            video_extensions = ('.mp4', '.mkv', '.avi', '.mov', '.flv', '.webm', '.ts', '.m3u8')
+            video_protocols = ('rtsp://', 'rtmp://', 'rtp://')
+            
+            self.is_video = url.lower().endswith(video_extensions) or \
+                          any(protocol in url.lower() for protocol in video_protocols)
+            
+            self.lrc_list.clear()
+            self.lrc_list.hide()
+
+            # 读取音频元数据（对于网络串流可能有限）
+            self.read_audio_metadata(url)
+
+            # 视频流：绑定渲染窗口到主窗口，清空封面
+            if self.is_video:
+                self.bind_video_window()
+                self.video_label.clear()
+                # 设置视频输出窗口
+                self.media_player.set_hwnd(self.video_label.winId())
+            else:
+                # 音频流：展示默认封面
+                self.show_default_cover()
+
+            # 开始播放网络串流
+            media = self.vlc_instance.media_new(url)
+            # 增大网络缓存容量（毫秒），提高流畅度
+            media.add_option(':network-caching=10000')
+            # 增大缓冲区大小（KB）
+            media.add_option(':buffer-size=8192')
+            # 增加更多优化选项
+            media.add_option(':live-caching=10000')
+            media.add_option(':prefetch-buffer-size=8192')
+            media.add_option(':input-buffer-size=8192')
+            # 允许更大的抖动缓冲
+            media.add_option(':clock-jitter=100')
+            media.add_option(':clock-synchro=0')
+            self.media_player.set_media(media)
+            
+            # 尝试播放
+            result = self.media_player.play()
+            if result == -1:
+                QMessageBox.critical(self, "播放失败", "无法播放该网络串流，请检查URL是否正确或网络是否正常")
+                return
+                
+            self.media_player.set_rate(self.cur_speed)
+
+            # 刷新媒体信息面板
+            self.show_media_info(url)
+
+            # 将URL保存到历史记录（最多保存10条）
+            current_items = [self.stream_url_input.itemText(i) for i in range(self.stream_url_input.count())]
+            if url not in current_items:
+                self.stream_url_input.insertItem(0, url)
+                if self.stream_url_input.count() > 10:
+                    self.stream_url_input.removeItem(self.stream_url_input.count() - 1)
+
+            QMessageBox.information(self, "提示", "网络串流已开始播放\n如果长时间无画面，请检查网络连接或尝试其他地址")
+            
+        except Exception as e:
+            QMessageBox.critical(self, "错误", f"播放网络串流时发生错误:\n{str(e)}")
+            print(f"Stream error: {e}")
 
     # ====================== 打开媒体文件（自动加载同目录LRC） ======================
     def open_media(self):
