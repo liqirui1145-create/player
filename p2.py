@@ -6,7 +6,8 @@ from datetime import datetime
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QSlider, QFileDialog, QLabel, QListWidget, QComboBox,
                              QMessageBox)
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QUrl
+from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor, QFont
 from PIL import Image
 
@@ -180,8 +181,22 @@ class MediaPlayer(QMainWindow):
         self.info_panel = QListWidget()
         right_layout.addWidget(self.info_panel)
 
+        gpl_layout = QHBoxLayout()
+        gpl_layout.addStretch()
+        self.gpl_label = QLabel()
+        gpl_logo_path = os.path.join(os.path.dirname(__file__), "gplv3-with-text-136x68.png")
+        if os.path.exists(gpl_logo_path):
+            self.gpl_label.setPixmap(QPixmap(gpl_logo_path))
+            self.gpl_label.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.gpl_label.mousePressEvent = self.open_gpl_link
+        gpl_layout.addWidget(self.gpl_label)
+        right_layout.addLayout(gpl_layout)
+
         main_layout.addWidget(left_widget, stretch=3)
         main_layout.addWidget(right_widget, stretch=1)
+
+    def open_gpl_link(self, event):
+        QDesktopServices.openUrl(QUrl("https://www.gnu.org/licenses/gpl-3.0"))
 
     # ====================== 自动加载项目目录中的默认封面 ======================
     def load_default_cover_from_file(self):
