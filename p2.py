@@ -318,9 +318,15 @@ class MediaPlayer(QMainWindow):
     # ====================== 全局键盘事件处理（快捷键） ======================
     def handle_global_key_press(self, event):
         """全局快捷键处理 - 按键按下"""
+    # ====================== 全局键盘事件处理（快捷键） ======================
+    def handle_global_key_press(self, event):
+        """全局快捷键处理 - 按键按下"""
         if event.isAutoRepeat():
             return False
+            return False
         key = event.key()
+        handled = True
+        
         handled = True
         
         # 空格：短按暂停/播放，长按临时2倍速
@@ -372,6 +378,19 @@ class MediaPlayer(QMainWindow):
             # 恢复原始播放倍速
             self.cur_speed = self.original_speed
             self.set_play_speed(str(self.cur_speed))
+            handled = True
+        
+        return handled  # 返回True表示事件已处理，不再传递
+    
+    def keyPressEvent(self, event):
+        """主窗口按键事件 - 委托给全局处理"""
+        if not self.handle_global_key_press(event):
+            super().keyPressEvent(event)
+
+    def keyReleaseEvent(self, event):
+        """主窗口按键释放事件 - 委托给全局处理"""
+        if not self.handle_global_key_release(event):
+            super().keyReleaseEvent(event)
             handled = True
         
         return handled  # 返回True表示事件已处理，不再传递
