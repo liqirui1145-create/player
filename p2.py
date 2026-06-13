@@ -235,6 +235,7 @@ class MediaPlayer(QMainWindow):
 
         # ========== 右侧媒体信息面板（可拖拽宽度） ==========
         right_widget = QWidget()
+        right_widget.setMinimumWidth(150)  # 设置最小宽度阈值
         right_layout = QVBoxLayout(right_widget)
         right_layout.setSpacing(10)
 
