@@ -5,7 +5,7 @@ from io import BytesIO
 from datetime import datetime
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QPushButton, QSlider, QFileDialog, QLabel, QListWidget, QComboBox,
-                             QMessageBox)
+                             QMessageBox, QSplitter)
 from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import QDesktopServices
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor, QFont
@@ -146,11 +146,11 @@ class MediaPlayer(QMainWindow):
         self.is_space_long = True
 
     def init_ui(self):
-        central = QWidget()
-        self.setCentralWidget(central)
-        main_layout = QHBoxLayout(central)
-        main_layout.setContentsMargins(20, 20, 20, 20)
-        main_layout.setSpacing(15)
+        # 使用 QSplitter 实现可拖拽调节宽度
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        self.setCentralWidget(splitter)
+        splitter.setContentsMargins(20, 20, 20, 20)
+        splitter.setHandleWidth(8)
 
         # ========== 左侧播放区域 ==========
         left_widget = QWidget()
@@ -289,8 +289,11 @@ class MediaPlayer(QMainWindow):
         gpl_layout.addWidget(self.gpl_label)
         right_layout.addLayout(gpl_layout)
 
-        main_layout.addWidget(left_widget, stretch=3)
-        main_layout.addWidget(right_widget, stretch=1)
+        # 添加到分割器，支持像素级自由拖拽
+        splitter.addWidget(left_widget)
+        splitter.addWidget(right_widget)
+        # 设置初始宽度比例为 3:1（左侧75%，右侧25%）
+        splitter.setSizes([768, 256])
 
     def open_gpl_link(self, event):
         QDesktopServices.openUrl(QUrl("https://www.gnu.org/licenses/gpl-3.0"))
