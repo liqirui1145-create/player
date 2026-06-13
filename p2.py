@@ -49,13 +49,22 @@ class MediaPlayer(QMainWindow):
         # 设置窗口状态为最大化
         self.setWindowState(Qt.WindowState.WindowMaximized)
 
-        # VLC 播放器初始化（修复COM音频报错）
-        self.vlc_instance = vlc.Instance("--quiet", "--aout=waveout")
+        # VLC 播放器初始化（支持网络串流）
+        self.vlc_instance = vlc.Instance(
+            "--quiet",
+            "--aout=waveout",
+            "--network-caching=10000",
+            "--live-caching=10000",
+            "--rtsp-tcp",
+            "--http-reconnect",
+            "--no-video-title-show"
+        )
         self.media_player = self.vlc_instance.media_player_new()
 
         # 全局播放状态
         self.cur_media_path = ""
         self.is_video = False
+        self.is_streaming = False  # 是否正在播放网络串流
         self.lrc_lines = []
         self.lrc_time_list = []
         self.cur_lrc_idx = -1
@@ -184,7 +193,7 @@ class MediaPlayer(QMainWindow):
         self.btn_stop = QPushButton("停止")
         self.btn_loop = QPushButton("单曲循环")
         self.btn_open_folder = QPushButton("打开文件夹")
-        # 【新增】设置默认封面按钮
+        # 设置默认封面按钮
         self.btn_set_cover = QPushButton("设置默认封面")
 
         self.cbx_speed = QComboBox()
@@ -224,7 +233,7 @@ class MediaPlayer(QMainWindow):
         self.btn_stop.clicked.connect(self.stop_play)
         self.btn_loop.clicked.connect(self.toggle_loop)
         self.btn_open_folder.clicked.connect(self.open_file_folder)
-        self.btn_set_cover.clicked.connect(self.set_custom_default_cover)  # 绑定设置封面
+        self.btn_set_cover.clicked.connect(self.set_custom_default_cover)
         self.cbx_speed.currentTextChanged.connect(self.set_play_speed)
         self.slider_pos.sliderMoved.connect(self.seek_pos)
         self.slider_vol.valueChanged.connect(self.set_volume)
@@ -365,12 +374,26 @@ class MediaPlayer(QMainWindow):
         """全局快捷键处理 - 按键按下"""
         if event.isAutoRepeat():
             return False
-            return False
         key = event.key()
         handled = True
         
-        handled = True
+        # 网络串流模式：只允许音量调节
+        if self.is_streaming:
+            # 上方向键：音量+5
+            if key == Qt.Key.Key_Up:
+                vol = self.media_player.audio_get_volume()
+                self.media_player.audio_set_volume(min(vol + 5, 100))
+                self.slider_vol.setValue(self.media_player.audio_get_volume())
+            # 下方向键：音量-5
+            elif key == Qt.Key.Key_Down:
+                vol = self.media_player.audio_get_volume()
+                self.media_player.audio_set_volume(max(vol - 5, 0))
+                self.slider_vol.setValue(self.media_player.audio_get_volume())
+            else:
+                handled = False
+            return handled
         
+        # 本地文件模式：所有快捷键可用
         # 空格：短按暂停/播放，长按临时2倍速
         if key == Qt.Key.Key_Space:
             self.space_pressed = True
@@ -410,6 +433,10 @@ class MediaPlayer(QMainWindow):
         """全局快捷键处理 - 按键释放"""
         key = event.key()
         handled = False
+        
+        # 网络串流模式：禁用空格键释放事件（避免暂停/播放）
+        if self.is_streaming:
+            return handled
         
         if key == Qt.Key.Key_Space and self.space_pressed:
             self.space_pressed = False
@@ -666,16 +693,27 @@ class MediaPlayer(QMainWindow):
                 self.media_player.stop()
 
             self.cur_media_path = url
+            self.is_streaming = True  # 标记为网络串流
             
             # 判断是否为视频流：检查扩展名或常见视频协议
-            video_extensions = ('.mp4', '.mkv', '.avi', '.mov', '.flv', '.webm', '.ts', '.m3u8')
+            video_extensions = ('.mp4', '.mkv', '.avi', '.mov', '.flv', '.webm', '.ts', '.m3u8', 
+                               '.mpeg', '.mpg', '.wmv', '.asf', '.m4v', '.3gp', '.ogv')
             video_protocols = ('rtsp://', 'rtmp://', 'rtp://')
             
+            # HTTP/HTTPS 流默认视为视频流，除非明确是音频格式
+            is_http_stream = url.lower().startswith('http://') or url.lower().startswith('https://')
+            audio_extensions = ('.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg', '.opus', '.wma')
+            
             self.is_video = url.lower().endswith(video_extensions) or \
-                          any(protocol in url.lower() for protocol in video_protocols)
+                          any(protocol in url.lower() for protocol in video_protocols) or \
+                          (is_http_stream and not url.lower().endswith(audio_extensions))
             
             self.lrc_list.clear()
             self.lrc_list.hide()
+            
+            # 禁用进度条（网络串流不支持拖拽进度）
+            self.slider_pos.setEnabled(False)
+            self.slider_pos.setStyleSheet("QSlider::groove:horizontal { background: #333; }")
 
             # 读取音频元数据（对于网络串流可能有限）
             self.read_audio_metadata(url)
@@ -739,9 +777,14 @@ class MediaPlayer(QMainWindow):
             return
 
         self.cur_media_path = path
+        self.is_streaming = False  # 标记为本地文件
         self.is_video = path.lower().endswith(('.mp4', '.mkv', '.avi', '.mov'))
         self.lrc_list.clear()
         self.lrc_list.hide()
+        
+        # 恢复进度条功能
+        self.slider_pos.setEnabled(True)
+        self.slider_pos.setStyleSheet("")
 
         # 读取音频元数据
         self.read_audio_metadata(path)
@@ -806,8 +849,8 @@ class MediaPlayer(QMainWindow):
         cur_ms = self.media_player.get_time()
         total_ms = self.media_player.get_length()
 
-        # 同步进度条
-        if total_ms > 0:
+        # 同步进度条（网络串流时跳过）
+        if not self.is_streaming and total_ms > 0:
             self.slider_pos.setRange(0, total_ms)
             self.slider_pos.setValue(cur_ms)
 
@@ -821,8 +864,8 @@ class MediaPlayer(QMainWindow):
                 self.cur_lrc_idx = target
                 self.lrc_list.setCurrentRow(target)
 
-        # 单曲循环：播放结束自动重播
-        if self.loop_single and total_ms > 0 and cur_ms >= total_ms - 100:
+        # 单曲循环：播放结束自动重播（网络串流不支持）
+        if not self.is_streaming and self.loop_single and total_ms > 0 and cur_ms >= total_ms - 100:
             self.media_player.set_time(0)
             self.media_player.play()
 
